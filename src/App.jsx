@@ -522,9 +522,64 @@ const EMPTY_WORKSHOP_FORM = {
   link: "",
   platform: "telegram",
   status: "active",
+  price: "",
+  paymentLink: "",
+  paymentQrImage: "",
 };
 
 const EMPTY_LINK_FORM = { title: "", url: "", platform: "telegram" };
+
+const EMPTY_NODE_FORM = { title: "", url: "", note: "", pendingLabel: "", kind: "link" };
+
+function getKids(node) {
+  return node.children || node.lessons || [];
+}
+function withKids(node, kids) {
+  const { lessons, children, ...rest } = node;
+  return { ...rest, children: kids };
+}
+function updateTree(list, id, updater) {
+  return list.map((node) => {
+    if (node.id === id) return updater(node);
+    const kids = getKids(node);
+    if (kids.length) {
+      const newKids = updateTree(kids, id, updater);
+      if (newKids !== kids) return withKids(node, newKids);
+    }
+    return node;
+  });
+}
+function deleteFromTree(list, id) {
+  return list
+    .filter((node) => node.id !== id)
+    .map((node) => {
+      const kids = getKids(node);
+      if (kids.length) return withKids(node, deleteFromTree(kids, id));
+      return node;
+    });
+}
+function addChildToTree(list, parentId, newNode) {
+  if (parentId === null) return [...list, newNode];
+  return list.map((node) => {
+    if (node.id === parentId) {
+      return withKids(node, [...getKids(node), newNode]);
+    }
+    const kids = getKids(node);
+    if (kids.length) return withKids(node, addChildToTree(kids, parentId, newNode));
+    return node;
+  });
+}
+function buildNodeFromForm(form, existingNode) {
+  const base = existingNode ? { ...existingNode } : { id: "n" + Date.now() + Math.floor(Math.random() * 1000) };
+  delete base.url;
+  delete base.note;
+  delete base.pendingLabel;
+  if (form.kind === "link") return { ...base, title: form.title, url: form.url };
+  if (form.kind === "note") return { ...base, title: form.title, note: form.note };
+  if (form.kind === "pending") return { ...base, title: form.title, ...(form.pendingLabel ? { pendingLabel: form.pendingLabel } : {}) };
+  // group
+  return { ...base, title: form.title, children: (existingNode && getKids(existingNode)) || [] };
+}
 
 function useGoogleFonts() {
   useEffect(() => {
@@ -700,6 +755,9 @@ export default function WorkshopSite() {
       link: w.link,
       platform: w.platform,
       status: w.status || "active",
+      price: w.price || "",
+      paymentLink: w.paymentLink || "",
+      paymentQrImage: w.paymentQrImage || "",
     });
     setWorkshopEditId(w.id);
     setWorkshopFormOpen(true);
@@ -763,6 +821,65 @@ export default function WorkshopSite() {
     const list = type === "social" ? socialLinks : contentLinks;
     await persistLinks(type, list.filter((item) => item.id !== id));
     setConfirmDelete(null);
+  };
+
+  // Generalized node editor (content tree: series / groups / notes / pending / links, any depth)
+  const [nodeEditorOpen, setNodeEditorOpen] = useState(false);
+  const [nodeEditorMode, setNodeEditorMode] = useState("addRoot"); // 'addRoot' | 'addChild' | 'edit'
+  const [nodeEditorTargetId, setNodeEditorTargetId] = useState(null);
+  const [nodeEditorParentId, setNodeEditorParentId] = useState(null);
+  const [nodeEditorForm, setNodeEditorForm] = useState(EMPTY_NODE_FORM);
+
+  const openNodeEditor = (mode, targetId = null, parentId = null, existingNode = null) => {
+    setNodeEditorMode(mode);
+    setNodeEditorTargetId(targetId);
+    setNodeEditorParentId(parentId);
+    if (existingNode) {
+      const kind = existingNode.children || existingNode.lessons
+        ? "group"
+        : typeof existingNode.note === "string"
+        ? "note"
+        : existingNode.url
+        ? "link"
+        : "pending";
+      setNodeEditorForm({
+        title: existingNode.title || "",
+        url: existingNode.url || "",
+        note: existingNode.note || "",
+        pendingLabel: existingNode.pendingLabel || "",
+        kind,
+      });
+    } else {
+      setNodeEditorForm(EMPTY_NODE_FORM);
+    }
+    setNodeEditorOpen(true);
+  };
+
+  const submitNodeEditor = async (e) => {
+    e.preventDefault();
+    if (!nodeEditorForm.title.trim()) {
+      setSaveError("العنوان مطلوب");
+      return;
+    }
+    if (nodeEditorForm.kind === "link" && !nodeEditorForm.url.trim()) {
+      setSaveError("الرابط مطلوب لهذا النوع");
+      return;
+    }
+    setSaveError("");
+    let next;
+    if (nodeEditorMode === "edit") {
+      next = updateTree(contentLinks, nodeEditorTargetId, (old) => buildNodeFromForm(nodeEditorForm, old));
+    } else {
+      const newNode = buildNodeFromForm(nodeEditorForm, null);
+      next = addChildToTree(contentLinks, nodeEditorMode === "addChild" ? nodeEditorParentId : null, newNode);
+    }
+    await persistLinks("content", next);
+    setNodeEditorOpen(false);
+    setNodeEditorForm(EMPTY_NODE_FORM);
+  };
+
+  const deleteContentNode = async (id) => {
+    await persistLinks("content", deleteFromTree(contentLinks, id));
   };
 
   return (
@@ -988,6 +1105,42 @@ export default function WorkshopSite() {
                         </div>
                       )}
 
+                      {w.status !== "ended" && (w.price || w.paymentLink || w.paymentQrImage) && (
+                        <div
+                          className="rounded-lg p-3 mb-3 flex flex-col gap-2"
+                          style={{ backgroundColor: "#FBF6E9", border: "1px solid #F0E3BE" }}
+                        >
+                          {w.price && (
+                            <div
+                              style={{ fontFamily: "'IBM Plex Mono', monospace" }}
+                              className="text-xs font-medium text-[#9A6B22]"
+                            >
+                              💳 السعر: {w.price}
+                            </div>
+                          )}
+                          {w.paymentLink && (
+                            <a
+                              href={w.paymentLink}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="flex items-center justify-center gap-1.5 text-xs font-medium py-2 rounded-md"
+                              style={{ backgroundColor: "#E8A33D", color: "#14181F" }}
+                            >
+                              ادفع الآن
+                              <ArrowUpRight size={12} />
+                            </a>
+                          )}
+                          {w.paymentQrImage && (
+                            <img
+                              src={w.paymentQrImage}
+                              alt="رمز الدفع QR"
+                              className="w-28 h-28 object-contain mx-auto rounded-md bg-white p-1"
+                              style={{ border: "1px solid #F0E3BE" }}
+                            />
+                          )}
+                        </div>
+                      )}
+
                       {w.status === "ended" ? (
                         <div
                           className="flex items-center justify-center gap-1.5 text-sm font-medium py-2.5 rounded-lg"
@@ -1053,12 +1206,10 @@ export default function WorkshopSite() {
         items={contentLinks}
         type="content"
         isAdmin={isAdmin}
-        onAdd={() => openAddLink("content")}
-        onEdit={(item) => openEditLink("content", item)}
-        onDelete={(id) => setConfirmDelete({ type: "content", id })}
-        confirmDelete={confirmDelete}
-        onConfirmDelete={(id) => deleteLink("content", id)}
-        onCancelDelete={() => setConfirmDelete(null)}
+        onAddRoot={() => openNodeEditor("addRoot")}
+        onNodeEdit={(node) => openNodeEditor("edit", node.id, null, node)}
+        onNodeAddChild={(parentId) => openNodeEditor("addChild", null, parentId)}
+        onNodeDelete={(id) => deleteContentNode(id)}
       />
       )}
 
@@ -1193,6 +1344,30 @@ export default function WorkshopSite() {
                   <option value="ended">انتهت (التسجيل مغلق)</option>
                 </select>
               </Field>
+              <Field label="السعر (اتركه فاضي إذا الورشة مجانية)">
+                <input
+                  value={workshopForm.price}
+                  onChange={(e) => setWorkshopForm({ ...workshopForm, price: e.target.value })}
+                  placeholder="مثال: 25,000 د.ع"
+                  style={inputStyle}
+                />
+              </Field>
+              <Field label="رابط الدفع (K Card / FIB / Zain Cash...) — اختياري">
+                <input
+                  value={workshopForm.paymentLink}
+                  onChange={(e) => setWorkshopForm({ ...workshopForm, paymentLink: e.target.value })}
+                  placeholder="https://..."
+                  style={inputStyle}
+                />
+              </Field>
+              <Field label="رابط صورة رمز الدفع QR — اختياري">
+                <input
+                  value={workshopForm.paymentQrImage}
+                  onChange={(e) => setWorkshopForm({ ...workshopForm, paymentQrImage: e.target.value })}
+                  placeholder="https://..."
+                  style={inputStyle}
+                />
+              </Field>
 
               {saveError && <p className="text-[#C1502E] text-xs">{saveError}</p>}
 
@@ -1269,6 +1444,92 @@ export default function WorkshopSite() {
         </div>
       )}
 
+      {/* Generalized content node editor (series / groups / notes / pending / links, any depth) */}
+      {nodeEditorOpen && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 px-5 py-8 overflow-y-auto">
+          <div
+            className="w-full max-w-md rounded-xl p-6"
+            style={{ backgroundColor: "#F8F7F2", border: "1px solid #E4E1D8" }}
+          >
+            <div className="flex items-center justify-between mb-4">
+              <h2 style={{ fontFamily: "'El Messiri', serif" }} className="text-lg font-semibold">
+                {nodeEditorMode === "edit" ? "تعديل عنصر" : "إضافة عنصر"}
+              </h2>
+              <button onClick={() => setNodeEditorOpen(false)} className="text-[#6B7280] hover:text-[#1F2430]">
+                <X size={18} />
+              </button>
+            </div>
+            <form onSubmit={submitNodeEditor} className="space-y-3">
+              <Field label="نوع العنصر">
+                <select
+                  value={nodeEditorForm.kind}
+                  onChange={(e) => setNodeEditorForm({ ...nodeEditorForm, kind: e.target.value })}
+                  style={inputStyle}
+                >
+                  <option value="link">رابط مباشر</option>
+                  <option value="group">مجموعة (تحتوي عناصر فرعية)</option>
+                  <option value="note">نبذة نصية</option>
+                  <option value="pending">قريبًا (بدون رابط)</option>
+                </select>
+              </Field>
+              <Field label="العنوان *">
+                <input
+                  value={nodeEditorForm.title}
+                  onChange={(e) => setNodeEditorForm({ ...nodeEditorForm, title: e.target.value })}
+                  style={inputStyle}
+                />
+              </Field>
+              {nodeEditorForm.kind === "link" && (
+                <Field label="الرابط *">
+                  <input
+                    value={nodeEditorForm.url}
+                    onChange={(e) => setNodeEditorForm({ ...nodeEditorForm, url: e.target.value })}
+                    placeholder="https://..."
+                    style={inputStyle}
+                  />
+                </Field>
+              )}
+              {nodeEditorForm.kind === "note" && (
+                <Field label="النص">
+                  <textarea
+                    value={nodeEditorForm.note}
+                    onChange={(e) => setNodeEditorForm({ ...nodeEditorForm, note: e.target.value })}
+                    rows={5}
+                    style={inputStyle}
+                  />
+                </Field>
+              )}
+              {nodeEditorForm.kind === "pending" && (
+                <Field label="ملاحظة (اختياري، مثال: سيُضاف يوم الخميس)">
+                  <input
+                    value={nodeEditorForm.pendingLabel}
+                    onChange={(e) => setNodeEditorForm({ ...nodeEditorForm, pendingLabel: e.target.value })}
+                    placeholder="قريبًا"
+                    style={inputStyle}
+                  />
+                </Field>
+              )}
+              {nodeEditorForm.kind === "group" && (
+                <p className="text-xs text-[#6B7280]">
+                  بعد الحفظ، تقدر تضيف عناصر فرعية داخل هذه المجموعة بالضغط على زر "+" جنبها.
+                </p>
+              )}
+
+              {saveError && <p className="text-[#C1502E] text-xs">{saveError}</p>}
+
+              <button
+                type="submit"
+                className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-sm font-medium mt-2"
+                style={{ backgroundColor: "#E8A33D", color: "#14181F" }}
+              >
+                <Check size={15} />
+                {nodeEditorMode === "edit" ? "حفظ التعديل" : "إضافة"}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
       <footer className="border-t border-[#E4E1D8] py-6 text-center text-[10px] text-[#9CA3AF]">
         <span style={{ fontFamily: "'IBM Plex Mono', monospace" }}>منصة نَبض — {new Date().getFullYear()}</span>
       </footer>
@@ -1288,9 +1549,54 @@ function LinkSection({
   confirmDelete,
   onConfirmDelete,
   onCancelDelete,
+  onAddRoot,
+  onNodeEdit,
+  onNodeAddChild,
+  onNodeDelete,
 }) {
-  const [openSeriesId, setOpenSeriesId] = useState(null);
+  if (type === "content") {
+    return (
+      <section id={id} className="max-w-5xl mx-auto px-5 pb-4 pt-10 scroll-mt-20">
+        <div className="flex items-center justify-between mb-5">
+          <h2 style={{ fontFamily: "'El Messiri', serif" }} className="text-xl font-semibold">
+            {title}
+          </h2>
+          {isAdmin && (
+            <button
+              onClick={onAddRoot}
+              className="flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg font-medium"
+              style={{ backgroundColor: "#E8A33D", color: "#14181F" }}
+            >
+              <Plus size={14} />
+              إضافة عنصر
+            </button>
+          )}
+        </div>
 
+        {items.length === 0 ? (
+          <div className="border border-dashed border-[#D9D4C6] rounded-xl p-8 text-center text-[#6B7280] text-sm">
+            لا يوجد محتوى بعد.
+          </div>
+        ) : (
+          <div className="flex flex-col gap-3">
+            {items.map((item) => (
+              <LessonNode
+                key={item.id}
+                node={item}
+                isAdmin={isAdmin}
+                onEdit={onNodeEdit}
+                onAddChild={onNodeAddChild}
+                onDelete={onNodeDelete}
+                topLevel
+              />
+            ))}
+          </div>
+        )}
+      </section>
+    );
+  }
+
+  // Flat list (social)
   return (
     <section id={id} className="max-w-5xl mx-auto px-5 pb-4 pt-10 scroll-mt-20">
       <div className="flex items-center justify-between mb-5">
@@ -1318,65 +1624,6 @@ function LinkSection({
           {items.map((item) => {
             const isConfirming =
               confirmDelete && confirmDelete.type === type && confirmDelete.id === item.id;
-
-            if (item.type === "series") {
-              const isOpen = openSeriesId === item.id;
-              return (
-                <div
-                  key={item.id}
-                  className="rounded-xl p-4 flex flex-col gap-3 sm:col-span-2 lg:col-span-1"
-                  style={{ backgroundColor: "#F8F7F2", border: "1px solid #E4E1D8" }}
-                >
-                  <button
-                    onClick={() => setOpenSeriesId(isOpen ? null : item.id)}
-                    className="flex items-center gap-3 text-right"
-                  >
-                    <div
-                      className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0"
-                      style={{ backgroundColor: "#2F6F62" }}
-                    >
-                      <Layers size={18} color="#FAF7F0" />
-                    </div>
-                    <span className="text-sm font-medium flex-1">{item.title}</span>
-                    <ChevronDown
-                      size={16}
-                      className="text-[#6B7280] transition-transform"
-                      style={{ transform: isOpen ? "rotate(180deg)" : "rotate(0deg)" }}
-                    />
-                  </button>
-
-                  {isOpen && (
-                    <div className="flex flex-col gap-2 pt-1 border-t border-[#E4E1D8]">
-                      {item.lessons.map((lesson) => (
-                        <LessonNode key={lesson.id} node={lesson} />
-                      ))}
-                    </div>
-                  )}
-
-                  {isAdmin && (
-                    <div className="flex gap-2 pt-1">
-                      {isConfirming ? (
-                        <button
-                          onClick={() => onConfirmDelete(item.id)}
-                          className="flex-1 flex items-center justify-center gap-1 text-[11px] py-1.5 rounded-md font-medium"
-                          style={{ backgroundColor: "#C1502E", color: "#FAF7F0" }}
-                        >
-                          تأكيد حذف السلسلة؟
-                        </button>
-                      ) : (
-                        <button
-                          onClick={() => onDelete(item.id)}
-                          className="flex-1 flex items-center justify-center gap-1 text-[11px] py-1.5 rounded-md border border-[#D9D4C6] text-[#6B7280] hover:text-[#C1502E] hover:border-[#C1502E]"
-                        >
-                          <Trash2 size={11} /> حذف السلسلة
-                        </button>
-                      )}
-                    </div>
-                  )}
-                </div>
-              );
-            }
-
             const meta = PLATFORM_META[item.platform] || PLATFORM_META.other;
             const Icon = meta.icon;
             return (
@@ -1438,30 +1685,109 @@ function LinkSection({
   );
 }
 
-function LessonNode({ node }) {
-  const [open, setOpen] = useState(false);
-
-  if (node.children && node.children.length > 0) {
-    return (
-      <div className="flex flex-col gap-2">
+function AdminNodeControls({ isAdmin, canAddChild, onEdit, onAddChild, onDelete }) {
+  const [confirming, setConfirming] = useState(false);
+  if (!isAdmin) return null;
+  return (
+    <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
+      {canAddChild && (
         <button
-          onClick={() => setOpen(!open)}
-          className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-right"
-          style={{ backgroundColor: "#FFFFFF", border: "1px solid #E4E1D8" }}
+          onClick={onAddChild}
+          title="إضافة عنصر فرعي"
+          className="w-6 h-6 flex items-center justify-center rounded-md border border-[#D9D4C6] text-[#6B7280] hover:text-[#1F2430] hover:border-[#E8A33D]"
         >
-          <BookOpen size={15} style={{ color: "#2F6F62" }} />
-          <span className="flex-1 font-medium">{node.title}</span>
-          <ChevronDown
-            size={14}
-            className="text-[#6B7280] transition-transform"
-            style={{ transform: open ? "rotate(180deg)" : "rotate(0deg)" }}
-          />
+          <Plus size={12} />
         </button>
+      )}
+      <button
+        onClick={onEdit}
+        title="تعديل"
+        className="w-6 h-6 flex items-center justify-center rounded-md border border-[#D9D4C6] text-[#6B7280] hover:text-[#1F2430] hover:border-[#E8A33D]"
+      >
+        <Pencil size={12} />
+      </button>
+      {confirming ? (
+        <button
+          onClick={onDelete}
+          title="تأكيد الحذف"
+          className="px-1.5 h-6 flex items-center justify-center rounded-md text-[10px] font-medium"
+          style={{ backgroundColor: "#C1502E", color: "#FAF7F0" }}
+        >
+          تأكيد؟
+        </button>
+      ) : (
+        <button
+          onClick={() => setConfirming(true)}
+          title="حذف"
+          className="w-6 h-6 flex items-center justify-center rounded-md border border-[#D9D4C6] text-[#6B7280] hover:text-[#C1502E] hover:border-[#C1502E]"
+        >
+          <Trash2 size={12} />
+        </button>
+      )}
+    </div>
+  );
+}
+
+function LessonNode({ node, isAdmin, onEdit, onAddChild, onDelete, topLevel }) {
+  const [open, setOpen] = useState(false);
+  const kids = node.children || node.lessons || [];
+  const wrapperClass = topLevel
+    ? "rounded-xl p-4"
+    : "rounded-lg";
+  const wrapperStyle = topLevel
+    ? { backgroundColor: "#F8F7F2", border: "1px solid #E4E1D8" }
+    : {};
+
+  if (kids.length > 0) {
+    return (
+      <div className={topLevel ? wrapperClass : "flex flex-col gap-2"} style={wrapperStyle}>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setOpen(!open)}
+            className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-right flex-1"
+            style={topLevel ? {} : { backgroundColor: "#FFFFFF", border: "1px solid #E4E1D8" }}
+          >
+            {topLevel ? (
+              <div
+                className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0"
+                style={{ backgroundColor: "#2F6F62" }}
+              >
+                <Layers size={17} color="#FAF7F0" />
+              </div>
+            ) : (
+              <BookOpen size={15} style={{ color: "#2F6F62" }} />
+            )}
+            <span className="flex-1 font-medium text-right">{node.title}</span>
+            <ChevronDown
+              size={14}
+              className="text-[#6B7280] transition-transform"
+              style={{ transform: open ? "rotate(180deg)" : "rotate(0deg)" }}
+            />
+          </button>
+          <AdminNodeControls
+            isAdmin={isAdmin}
+            canAddChild
+            onEdit={() => onEdit(node)}
+            onAddChild={() => onAddChild(node.id)}
+            onDelete={() => onDelete(node.id)}
+          />
+        </div>
         {open && (
-          <div className="flex flex-col gap-2 pr-3 mr-1 border-r-2" style={{ borderColor: "#E4E1D8" }}>
-            {node.children.map((child) => (
-              <LessonNode key={child.id} node={child} />
-            ))}
+          <div className="flex flex-col gap-2 pr-3 mr-1 pt-1 border-r-2" style={{ borderColor: "#E4E1D8" }}>
+            {kids.length === 0 ? (
+              <p className="text-xs text-[#9CA3AF] px-2">لا توجد عناصر فرعية بعد.</p>
+            ) : (
+              kids.map((child) => (
+                <LessonNode
+                  key={child.id}
+                  node={child}
+                  isAdmin={isAdmin}
+                  onEdit={onEdit}
+                  onAddChild={onAddChild}
+                  onDelete={onDelete}
+                />
+              ))
+            )}
           </div>
         )}
       </div>
@@ -1469,24 +1795,33 @@ function LessonNode({ node }) {
   }
 
   const hasNote = typeof node.note === "string" && node.note.trim().length > 0;
-  const isPending = !node.children && !hasNote && !node.url;
+  const isPending = !hasNote && !node.url;
 
   if (hasNote) {
     return (
-      <div className="flex flex-col gap-2">
-        <button
-          onClick={() => setOpen(!open)}
-          className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-right"
-          style={{ backgroundColor: "#FFFFFF", border: "1px solid #E4E1D8" }}
-        >
-          <FileText size={15} style={{ color: "#E8A33D" }} />
-          <span className="flex-1 font-medium">{node.title}</span>
-          <ChevronDown
-            size={14}
-            className="text-[#6B7280] transition-transform"
-            style={{ transform: open ? "rotate(180deg)" : "rotate(0deg)" }}
+      <div className={topLevel ? wrapperClass : "flex flex-col gap-2"} style={wrapperStyle}>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setOpen(!open)}
+            className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-right flex-1"
+            style={topLevel ? {} : { backgroundColor: "#FFFFFF", border: "1px solid #E4E1D8" }}
+          >
+            <FileText size={15} style={{ color: "#E8A33D" }} />
+            <span className="flex-1 font-medium text-right">{node.title}</span>
+            <ChevronDown
+              size={14}
+              className="text-[#6B7280] transition-transform"
+              style={{ transform: open ? "rotate(180deg)" : "rotate(0deg)" }}
+            />
+          </button>
+          <AdminNodeControls
+            isAdmin={isAdmin}
+            canAddChild={false}
+            onEdit={() => onEdit(node)}
+            onAddChild={() => {}}
+            onDelete={() => onDelete(node.id)}
           />
-        </button>
+        </div>
         {open && (
           <div
             className="px-3 py-2.5 rounded-lg text-xs leading-relaxed mr-1"
@@ -1501,32 +1836,50 @@ function LessonNode({ node }) {
 
   if (isPending) {
     return (
-      <div
-        className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm"
-        style={{ backgroundColor: "#F3F1EA", border: "1px dashed #D9D4C6", color: "#9CA3AF" }}
-      >
-        <Clock size={15} />
-        <span className="flex-1">{node.title}</span>
-        <span className="text-[10px]">{node.pendingLabel || "قريبًا"}</span>
+      <div className={topLevel ? wrapperClass : "flex items-center gap-2"} style={wrapperStyle}>
+        <div
+          className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm flex-1"
+          style={topLevel ? {} : { backgroundColor: "#F3F1EA", border: "1px dashed #D9D4C6", color: "#9CA3AF" }}
+        >
+          <Clock size={15} />
+          <span className="flex-1">{node.title}</span>
+          <span className="text-[10px]">{node.pendingLabel || "قريبًا"}</span>
+        </div>
+        <AdminNodeControls
+          isAdmin={isAdmin}
+          canAddChild={false}
+          onEdit={() => onEdit(node)}
+          onAddChild={() => {}}
+          onDelete={() => onDelete(node.id)}
+        />
       </div>
     );
   }
 
   return (
-    <a
-      href={node.url}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="group flex items-center gap-2 px-3 py-2 rounded-lg text-sm"
-      style={{ backgroundColor: "#FFFFFF", border: "1px solid #E4E1D8" }}
-    >
-      <PlayCircle size={15} style={{ color: "#2F6F62" }} />
-      <span className="flex-1">{node.title}</span>
-      <ArrowUpRight
-        size={14}
-        className="text-[#6B7280] transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5"
+    <div className={topLevel ? wrapperClass : "flex items-center gap-2"} style={wrapperStyle}>
+      <a
+        href={node.url}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="group flex items-center gap-2 px-3 py-2 rounded-lg text-sm flex-1"
+        style={topLevel ? {} : { backgroundColor: "#FFFFFF", border: "1px solid #E4E1D8" }}
+      >
+        <PlayCircle size={15} style={{ color: "#2F6F62" }} />
+        <span className="flex-1">{node.title}</span>
+        <ArrowUpRight
+          size={14}
+          className="text-[#6B7280] transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5"
+        />
+      </a>
+      <AdminNodeControls
+        isAdmin={isAdmin}
+        canAddChild={false}
+        onEdit={() => onEdit(node)}
+        onAddChild={() => {}}
+        onDelete={() => onDelete(node.id)}
       />
-    </a>
+    </div>
   );
 }
 
