@@ -752,7 +752,7 @@ export default function WorkshopSite() {
   const [socialLinks, setSocialLinks] = useState([]);
   const [contentLinks, setContentLinks] = useState([]);
   const [loaded, setLoaded] = useState(false);
-  const [connectionError, setConnectionError] = useState(false);
+  const [connectionError, setConnectionError] = useState("");
 
   const [isAdmin, setIsAdmin] = useState(false);
   const [showLogin, setShowLogin] = useState(false);
@@ -783,7 +783,7 @@ export default function WorkshopSite() {
       setSocialLinks(s);
       setContentLinks(c);
     } catch (e) {
-      setConnectionError(true);
+      setConnectionError((e && (e.message || e.code)) || String(e) || "خطأ غير معروف");
       setWorkshops(SEED_WORKSHOPS);
       setSocialLinks(SEED_SOCIAL);
       setContentLinks(SEED_CONTENT);
@@ -1023,7 +1023,11 @@ export default function WorkshopSite() {
           className="text-center text-xs py-2 px-4"
           style={{ backgroundColor: "#FBEFE7", color: "#9A5A22" }}
         >
-          تعذر الاتصال بقاعدة البيانات هنا — البيانات المعروضة محلية مؤقتًا ولن تُحفظ. سيعمل هذا بشكل طبيعي بعد نشر الموقع على رابط حقيقي.
+          تعذر الاتصال بقاعدة البيانات — البيانات المعروضة محلية مؤقتًا ولن تُحفظ.
+          <br />
+          <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: "10px" }}>
+            تفاصيل الخطأ: {connectionError}
+          </span>
         </div>
       )}
 
